@@ -1,0 +1,222 @@
+<!doctype html>
+<html style="width: 100%; height: 100%">
+  <head>
+    <meta charset="utf-8">
+    <title>wabps</title>
+  </head>
+
+  <body style="margin: 0; width: 100%; height: 100%; overflow: hidden">
+    <canvas id="output" width="1024" height="600" style="width: 100%; height: 50%; background: black; display: block"></canvas>
+    <canvas id="wa_output" width="1024" height="600" style="width: 100%; height: 50%; background: black"></canvas>
+    <button id="start_btn" style="position: absolute; left:0; top: 0;">Start</button>
+
+    <script type="text/javascript">
+    window.onload = async function () {
+      const getFrequency = (n, base_frequency, i, octaves) => {
+        return base_frequency * Math.pow(2, i / (n / octaves))
+      }
+
+      const canvas = document.getElementById("output")
+      const canvas_ctx = canvas.getContext('2d')
+
+      const tmp_canvas = document.getElementById("output")
+      const tmp_canvas_ctx = tmp_canvas.getContext('2d')
+
+      const wa_canvas = document.getElementById("wa_output")
+      const wa_canvas_ctx = wa_canvas.getContext("2d")
+
+      const tmp_wa_canvas = document.getElementById("wa_output")
+      const tmp_wa_canvas_ctx = wa_canvas.getContext("2d")
+
+      // create audio context
+      const audio_context = new window.AudioContext({
+        sampleRate: 44100 / 2
+      })
+
+      // = analysis parameters
+      // web audio bandpass filter bank
+      const minimum_frequency = 16.34
+      const maximum_frequency = audio_context.sampleRate / 2 // linear
+      const octaves = 10 // logarithmic
+      const frequency_step = 30 // linear
+      const analysis_window_size = 8192 / 2
+      const magnitude_factor = 128
+
+      // web audio analyzer node
+      const fft_size = analysis_window_size // NOTE : should be power of two for web audio analyzer (bp filter bank don't have that limitation)
+      const wa_magnitude_factor = 1
+      const wa_speed = 1
+      const wa_canvas_height = 100
+      // =
+
+      const speed = 1
+
+      canvas.width = 512
+      canvas.height = 100 // linear : Math.round((maximum_frequency - minimum_frequency) / frequency_step)
+
+      tmp_canvas.width = canvas.width
+      tmp_canvas.height = canvas.height
+
+      wa_canvas.width = canvas.width
+      wa_canvas.height = wa_canvas_height
+
+      tmp_wa_canvas.width = canvas.width
+      tmp_wa_canvas.height = wa_canvas_height
+
+      // = Web audio analyzer
+      const analyzer = audio_context.createAnalyser()
+      analyzer.fftSize = fft_size
+      analyzer.smoothingTimeConstant = 0
+
+      const analysis_data = new Uint8Array(analyzer.frequencyBinCount)
+      const draw = () => {
+        //requestAnimationFrame(draw)
+
+        analyzer.getByteFrequencyData(analysis_data)
+
+        tmp_wa_canvas_ctx.drawImage(tmp_wa_canvas, 0, 0, tmp_wa_canvas.width, tmp_wa_canvas.height)
+
+        for (let i = 0; i < wa_canvas.height; i += 1) {
+          const freq = getFrequency(wa_canvas.height, minimum_frequency, wa_canvas.height - i, octaves)
+
+          const bin_index = Math.round(freq * fft_size / audio_context.sampleRate)
+
+          const color = Math.round(analysis_data[bin_index] * wa_magnitude_factor)
+
+          wa_canvas_ctx.fillStyle = 'rgba(' + color + ',' + color + ',' + color + ',' + 1 + ')'
+          wa_canvas_ctx.fillRect(wa_canvas.width - 1 - wa_speed, i, wa_speed, wa_speed)
+        }
+
+        wa_canvas_ctx.translate(-wa_speed, 0)
+
+        wa_canvas_ctx.drawImage(tmp_wa_canvas, 0, 0, wa_canvas.width, wa_canvas.height, 0, 0, wa_canvas.width, wa_canvas.height)
+
+        wa_canvas_ctx.setTransform(1, 0, 0, 1, 0, 0)
+      }
+      // =
+
+      // compute blackman looktup table (avoid abrupt start & end, probably help improving quality; this is the same window used on Web Audio analyzer node for smoothingTimeConstant except Web Audio analyzer node apply it between buffers)
+      const a0 = 0.426591
+      const a1 = 0.496561
+      const a2 = 0.076849
+      const L = (analysis_window_size - 1)
+      const blackman_arr = new Float32Array(analysis_window_size)
+      for (let j = 0; j < analysis_window_size; j += 1) {
+        blackman_arr[j] = a0
+        blackman_arr[j] -= a1 * Math.cos((1.0 * 2.0 * Math.PI * j) / L)
+        blackman_arr[j] += a2 * Math.cos((2.0 * 2.0 * Math.PI * j) / L)
+        blackman_arr[j] -= 0.006879
+      }
+
+      audio_context.audioWorklet.addModule('capture-node.js').then(() => {
+        const capture_worklet_node = new AudioWorkletNode(audio_context, 'capture-node')
+
+        const audio_buffer = audio_context.createBuffer(1, analysis_window_size, audio_context.sampleRate)
+
+        let processing_duration = 0
+        let event_duration = 0
+        
+        let last_event_time = performance.now()
+        capture_worklet_node.port.onmessage = (event) => {
+          const data = new Float32Array(event.data)
+
+          //audio_buffer.copyToChannel(data, 0)
+          const buffer_chn_data = audio_buffer.getChannelData(0)
+          for (let i = 0; i < buffer_chn_data.length; i += 1) {
+            buffer_chn_data[i] = data[i] * blackman_arr[i]
+          }
+
+          let last_processing_time = performance.now()
+
+          tmp_canvas_ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height)
+
+          // do bandpass filter-bank analysis from worklet mic chunk data
+          for (let i = 0; i < canvas.height; i += 1) {
+            const offline_audio_ctx = new OfflineAudioContext(1, analysis_window_size, audio_context.sampleRate)
+
+            // create a bandpass filter
+            const bp_filter = offline_audio_ctx.createBiquadFilter()
+            bp_filter.type = 'bandpass'
+            bp_filter.connect(offline_audio_ctx.destination)
+
+            // run analysis for a single band
+            const from = getFrequency(canvas.height, minimum_frequency, canvas.height - i, octaves)
+            const to = getFrequency(canvas.height, minimum_frequency, canvas.height - i + 1, octaves) // linear : current_frequency + frequency_step
+            const geometric_mean = Math.sqrt(from * to)
+
+            // limit analysis up to nyquist
+            if (geometric_mean >= audio_context.sampleRate / 2) {
+              continue
+            }
+
+            bp_filter.frequency.value = geometric_mean
+            bp_filter.Q.value = geometric_mean / (to - from)
+            
+            const source_node = offline_audio_ctx.createBufferSource()
+            source_node.buffer = audio_buffer
+
+            source_node.connect(bp_filter)
+            source_node.start(0)
+
+            // start frequency band analysis & rendering
+            offline_audio_ctx.startRendering().then((rendered_buffer) => {
+              const pcmf32_buffer = rendered_buffer.getChannelData(0)
+
+              // draw frequency band
+              let mean_amplitude = 0
+              for (let j = 0; j < pcmf32_buffer.length; j += 1) {
+                mean_amplitude += Math.abs(pcmf32_buffer[j])
+              }
+              mean_amplitude /= pcmf32_buffer.length
+
+              const color = Math.round(mean_amplitude * 255 * magnitude_factor);
+
+              canvas_ctx.fillStyle = 'rgba(' + color + ',' + color + ',' + color + ',' + 1 + ')'
+              canvas_ctx.fillRect(canvas.width - 1 - speed, i, speed, speed);
+            })
+          }
+
+          canvas_ctx.translate(-speed, 0)
+
+          canvas_ctx.drawImage(tmp_canvas, 0, 0, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height)
+
+          canvas_ctx.setTransform(1, 0, 0, 1, 0, 0)
+
+          processing_duration = performance.now() - last_processing_time
+          event_duration = performance.now() - last_event_time
+
+          console.log("processing duration", processing_duration)
+          last_processing_time = performance.now()
+
+          console.log("event duration", event_duration)
+          last_event_time = performance.now()
+
+          draw()
+        };
+
+        const analysis_window_size_param = capture_worklet_node.parameters.get("analysisWindowSize")
+        analysis_window_size_param.setValueAtTime(analysis_window_size, audio_context.currentTime)
+
+        // microphone input
+        navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+        .then((media_stream) => {
+          const input = audio_context.createMediaStreamSource(media_stream)
+
+          input.connect(capture_worklet_node)
+
+          input.connect(analyzer)
+
+          capture_worklet_node.connect(audio_context.destination)
+
+          //draw();
+        })
+        .catch((err) => { console.log(err.name + ": " + err.message) })
+      });
+
+      document.getElementById('start_btn').addEventListener('click', async () => {
+        await audio_context.resume()
+      })
+    }
+    </script>
+  </body>
+</html>
