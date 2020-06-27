@@ -139,6 +139,21 @@
             bp_filter.type = 'bandpass'
             bp_filter.connect(offline_audio_ctx.destination)
 
+            // create a second bandpass filter (24db rolloff)
+            const bp_filter2 = offline_audio_ctx.createBiquadFilter()
+            bp_filter2.type = 'bandpass'
+            bp_filter2.connect(bp_filter)
+
+            // create a second bandpass filter (48db rolloff)
+            const bp_filter3 = offline_audio_ctx.createBiquadFilter()
+            bp_filter3.type = 'bandpass'
+            bp_filter3.connect(bp_filter2)
+
+            // create a second bandpass filter (96db rolloff)
+            const bp_filter4 = offline_audio_ctx.createBiquadFilter()
+            bp_filter4.type = 'bandpass'
+            bp_filter4.connect(bp_filter3)
+
             // run analysis for a single band
             const from = getFrequency(canvas.height, minimum_frequency, canvas.height - i, octaves)
             const to = getFrequency(canvas.height, minimum_frequency, canvas.height - i + 1, octaves) // linear : current_frequency + frequency_step
@@ -151,11 +166,20 @@
 
             bp_filter.frequency.value = geometric_mean
             bp_filter.Q.value = geometric_mean / (to - from)
+
+            bp_filter2.frequency.value = geometric_mean
+            bp_filter2.Q.value = geometric_mean / (to - from)
             
+            bp_filter3.frequency.value = geometric_mean
+            bp_filter3.Q.value = geometric_mean / (to - from)
+
+            bp_filter4.frequency.value = geometric_mean
+            bp_filter4.Q.value = geometric_mean / (to - from)
+
             const source_node = offline_audio_ctx.createBufferSource()
             source_node.buffer = audio_buffer
 
-            source_node.connect(bp_filter)
+            source_node.connect(bp_filter) // replace it with bp_filter4 (96db) bp_filter3 (48db) bp_filter2 (24db) bp_filter (12db)
             source_node.start(0)
 
             // start frequency band analysis & rendering
